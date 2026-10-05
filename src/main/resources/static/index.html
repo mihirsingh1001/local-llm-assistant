@@ -1,0 +1,418 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Local LLM Assistant</title>
+    <style>
+        * {
+            box-sizing: border-box;
+        }
+
+        body {
+            margin: 0;
+            font-family: Arial, sans-serif;
+            background: #0f172a;
+            color: white;
+        }
+
+        .container {
+            width: 700px;
+            max-width: 95%;
+            height: 700px;
+            margin: 40px auto;
+            display: flex;
+            flex-direction: column;
+            background: #1e293b;
+            border-radius: 12px;
+            overflow: hidden;
+        }
+
+        .header {
+            padding: 20px;
+            background: #111827;
+            font-size: 22px;
+            font-weight: bold;
+            border-bottom: 1px solid #334155;
+        }
+
+        .chat-box {
+            flex: 1;
+            padding: 20px;
+            overflow-y: auto;
+            overflow-x: hidden;
+        }
+
+        .message {
+            margin-bottom: 15px;
+            padding: 12px 15px;
+            border-radius: 10px;
+            max-width: 80%;
+            line-height: 1.5;
+            overflow-wrap: anywhere;
+            word-break: break-word;
+        }
+
+        .user {
+            background: #2563eb;
+            margin-left: auto;
+            margin-right: 0;
+            white-space: pre-wrap;
+        }
+
+        .ai {
+            background: #334155;
+            margin-right: auto;
+            margin-left: 0;
+        }
+
+        .ai h1,
+        .ai h2,
+        .ai h3 {
+            margin-top: 12px;
+            margin-bottom: 8px;
+        }
+
+        .ai h1 {
+            font-size: 24px;
+        }
+
+        .ai h2 {
+            font-size: 21px;
+        }
+
+        .ai h3 {
+            font-size: 18px;
+        }
+
+        .ai strong {
+            font-weight: bold;
+        }
+
+        .ai p {
+            margin: 8px 0;
+        }
+
+        .ai ul {
+            margin: 8px 0;
+            padding-left: 25px;
+        }
+
+        .ai ol {
+            margin: 8px 0;
+            padding-left: 25px;
+        }
+
+        .ai li {
+            margin: 4px 0;
+        }
+
+        .ai code {
+            background: #0f172a;
+            padding: 2px 5px;
+            border-radius: 4px;
+            font-family: Consolas, monospace;
+        }
+
+        .ai pre {
+            background: #0f172a;
+            padding: 12px;
+            border-radius: 8px;
+            overflow-x: auto;
+            white-space: pre-wrap;
+        }
+
+        .ai pre code {
+            background: transparent;
+            padding: 0;
+        }
+
+        .input-area {
+            display: flex;
+            padding: 15px;
+            background: #111827;
+            gap: 10px;
+            border-top: 1px solid #334155;
+        }
+
+        input {
+            flex: 1;
+            padding: 12px;
+            border: none;
+            border-radius: 8px;
+            outline: none;
+            font-size: 16px;
+        }
+
+        button {
+            padding: 12px 20px;
+            border: none;
+            border-radius: 8px;
+            background: #2563eb;
+            color: white;
+            cursor: pointer;
+            font-size: 16px;
+        }
+
+        button:hover {
+            background: #1d4ed8;
+        }
+
+        button:disabled {
+            background: #475569;
+            cursor: not-allowed;
+        }
+
+        .chat-box::-webkit-scrollbar {
+            width: 8px;
+        }
+
+        .chat-box::-webkit-scrollbar-track {
+            background: #1e293b;
+        }
+
+        .chat-box::-webkit-scrollbar-thumb {
+            background: #475569;
+            border-radius: 10px;
+        }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <div class="header">Local LLM Assistant</div>
+
+    <div id="chatBox" class="chat-box"></div>
+
+    <div class="input-area">
+        <input
+                id="messageInput"
+                type="text"
+                placeholder="Ask something..."
+                autocomplete="off"
+        >
+        <button id="sendButton" onclick="sendMessage()">Send</button>
+    </div>
+</div>
+
+<script>
+    const conversationId = "chat-1";
+
+    async function sendMessage() {
+        const input = document.getElementById("messageInput");
+        const button = document.getElementById("sendButton");
+        const chatBox = document.getElementById("chatBox");
+
+        const message = input.value.trim();
+
+        if (!message) {
+            return;
+        }
+
+        const userMessage = document.createElement("div");
+        userMessage.className = "message user";
+        userMessage.textContent = message;
+        chatBox.appendChild(userMessage);
+
+        input.value = "";
+        button.disabled = true;
+
+        const aiMessage = document.createElement("div");
+        aiMessage.className = "message ai";
+        aiMessage.dataset.content = "";
+        chatBox.appendChild(aiMessage);
+
+        try {
+            const response = await fetch("/api/chat/stream", {
+                method: "POST",
+                headers: {
+                    "Content-Type": "application/json",
+                    "Accept": "text/event-stream"
+                },
+                body: JSON.stringify({
+                    conversationId: conversationId,
+                    message: message
+                })
+            });
+
+            if (!response.ok) {
+                throw new Error("HTTP Error: " + response.status);
+            }
+
+            const reader = response.body.getReader();
+            const decoder = new TextDecoder();
+            let buffer = "";
+
+            while (true) {
+                const { value, done } = await reader.read();
+
+                if (done) {
+                    break;
+                }
+
+                buffer += decoder.decode(value, {
+                    stream: true
+                });
+
+                const events = buffer.split("\n\n");
+                buffer = events.pop();
+
+                for (const event of events) {
+                    processSSEEvent(
+                        event,
+                        aiMessage,
+                        chatBox
+                    );
+                }
+            }
+
+            if (buffer.trim()) {
+                processSSEEvent(
+                    buffer,
+                    aiMessage,
+                    chatBox
+                );
+            }
+        } catch (error) {
+            console.error("Streaming error:", error);
+
+            aiMessage.textContent =
+                "Error communicating with the AI server.";
+        } finally {
+            button.disabled = false;
+            input.focus();
+        }
+    }
+
+    function processSSEEvent(event, aiMessage, chatBox) {
+        let eventType = "message";
+        let data = "";
+
+        const lines = event.split("\n");
+
+        for (const line of lines) {
+            if (line.startsWith("event:")) {
+                eventType = line.substring(6).trim();
+            }
+
+            if (line.startsWith("data:")) {
+                let chunk = line.substring(5);
+
+                if (chunk.startsWith(" ")) {
+                    chunk = chunk.substring(1);
+                }
+
+                data += chunk;
+            }
+        }
+
+        if (eventType === "message" && data) {
+            const current = aiMessage.dataset.content || "";
+
+            const needsSpace =
+                current &&
+                !current.endsWith(" ") &&
+                !current.endsWith("\n") &&
+                !data.startsWith(" ") &&
+                !data.startsWith("\n") &&
+                !/^[.,!?;:%)\]}]/.test(data);
+
+            if (needsSpace) {
+                aiMessage.dataset.content += " ";
+            }
+
+            aiMessage.dataset.content += data;
+
+            aiMessage.innerHTML = formatMarkdown(
+                aiMessage.dataset.content
+            );
+
+            chatBox.scrollTop = chatBox.scrollHeight;
+        }
+
+        if (eventType === "complete") {
+            console.log("AI response completed");
+        }
+    }
+
+    function formatMarkdown(text) {
+        let html = escapeHtml(text);
+
+        html = html.replace(
+            /```([\s\S]*?)```/g,
+            "<pre><code>$1</code></pre>"
+        );
+
+        html = html.replace(
+            /`([^`\n]+)`/g,
+            "<code>$1</code>"
+        );
+
+        html = html.replace(
+            /^###\s+(.*?)$/gm,
+            "<h3>$1</h3>"
+        );
+
+        html = html.replace(
+            /^##\s+(.*?)$/gm,
+            "<h2>$1</h2>"
+        );
+
+        html = html.replace(
+            /^#\s+(.*?)$/gm,
+            "<h1>$1</h1>"
+        );
+
+        html = html.replace(
+            /\*\*\s*(.*?)\s*\*\*/g,
+            "<strong>$1</strong>"
+        );
+
+        html = html.replace(
+            /(^|\n)(\d+)\.\s+(.*?)(?=\n|$)/g,
+            "$1<ol><li>$3</li></ol>"
+        );
+
+        html = html.replace(
+            /(^|\n)[-*]\s+(.*?)(?=\n|$)/g,
+            "$1<ul><li>$2</li></ul>"
+        );
+
+        html = html.replace(
+            /\n/g,
+            "<br>"
+        );
+
+        html = html.replace(
+            /<\/ol><br><ol>/g,
+            ""
+        );
+
+        html = html.replace(
+            /<\/ul><br><ul>/g,
+            ""
+        );
+
+        return html;
+    }
+
+    function escapeHtml(text) {
+        const div = document.createElement("div");
+        div.textContent = text;
+        return div.innerHTML;
+    }
+
+    document
+        .getElementById("messageInput")
+        .addEventListener(
+            "keydown",
+            function(event) {
+                if (event.key === "Enter") {
+                    sendMessage();
+                }
+            }
+        );
+</script>
+
+</body>
+</html>
