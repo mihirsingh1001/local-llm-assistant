@@ -244,7 +244,7 @@
             let buffer = "";
 
             while (true) {
-                const { value, done } = await reader.read();
+                const {value, done} = await reader.read();
 
                 if (done) {
                     break;
@@ -286,42 +286,22 @@
 
     function processSSEEvent(event, aiMessage, chatBox) {
         let eventType = "message";
-        let data = "";
+        const dataLines = [];
 
-        const lines = event.split("\n");
-
-        for (const line of lines) {
+        for (const line of event.split(/\r?\n/)) {
             if (line.startsWith("event:")) {
-                eventType = line.substring(6).trim();
-            }
-
-            if (line.startsWith("data:")) {
-                let chunk = line.substring(5);
-
-                if (chunk.startsWith(" ")) {
-                    chunk = chunk.substring(1);
-                }
-
-                data += chunk;
+                eventType = line.slice(6).trim();
+            } else if (line.startsWith("data:")) {
+                dataLines.push(line.slice(5));
             }
         }
 
-        if (eventType === "message" && data) {
-            const current = aiMessage.dataset.content || "";
+        if (eventType === "message" && dataLines.length > 0) {
+            const chunk = dataLines.join("\n");
+            console.log("Received SSE chunk:", JSON.stringify(chunk));
 
-            const needsSpace =
-                current &&
-                !current.endsWith(" ") &&
-                !current.endsWith("\n") &&
-                !data.startsWith(" ") &&
-                !data.startsWith("\n") &&
-                !/^[.,!?;:%)\]}]/.test(data);
-
-            if (needsSpace) {
-                aiMessage.dataset.content += " ";
-            }
-
-            aiMessage.dataset.content += data;
+            aiMessage.dataset.content =
+                (aiMessage.dataset.content || "") + chunk;
 
             aiMessage.innerHTML = formatMarkdown(
                 aiMessage.dataset.content
@@ -336,11 +316,21 @@
     }
 
     function formatMarkdown(text) {
-        let html = escapeHtml(text);
+        const escapeHtml = value => value
+            .replace(/&/g, "&amp;")
+            .replace(/</g, "&lt;")
+            .replace(/>/g, "&gt;")
+            .replace(/"/g, "&quot;")
+            .replace(/'/g, "&#39;");
 
-        html = html.replace(
-            /```([\s\S]*?)```/g,
-            "<pre><code>$1</code></pre>"
+        const codeBlocks = [];
+        let html = escapeHtml(text).replace(
+            /```(?:\w+)?\n?([\s\S]*?)```/g,
+            (_, code) => {
+                const placeholder = `@@CODE_BLOCK_${codeBlocks.length}@@`;
+                codeBlocks.push(`<pre><code>${code}</code></pre>`);
+                return placeholder;
+            }
         );
 
         html = html.replace(
@@ -349,52 +339,81 @@
         );
 
         html = html.replace(
-            /^###\s+(.*?)$/gm,
-            "<h3>$1</h3>"
-        );
-
-        html = html.replace(
-            /^##\s+(.*?)$/gm,
-            "<h2>$1</h2>"
-        );
-
-        html = html.replace(
-            /^#\s+(.*?)$/gm,
-            "<h1>$1</h1>"
-        );
-
-        html = html.replace(
-            /\*\*\s*(.*?)\s*\*\*/g,
+            /\*\*\s*(.+?)\s*\*\*/g,
             "<strong>$1</strong>"
         );
 
-        html = html.replace(
-            /(^|\n)(\d+)\.\s+(.*?)(?=\n|$)/g,
-            "$1<ol><li>$3</li></ol>"
-        );
+        const output = [];
+        let openList = null;
 
-        html = html.replace(
-            /(^|\n)[-*]\s+(.*?)(?=\n|$)/g,
-            "$1<ul><li>$2</li></ul>"
-        );
+        const closeList = () => {
+            if (openList) {
+                output.push(`</${openList}>`);
+                openList = null;
+            }
+        };
 
-        html = html.replace(
-            /\n/g,
-            "<br>"
-        );
+        const addListItem = (type, content) => {
+            if (openList !== type) {
+                closeList();
+                output.push(`<${type}>`);
+                openList = type;
+            }
 
-        html = html.replace(
-            /<\/ol><br><ol>/g,
-            ""
-        );
+            output.push(`<li>${content}</li>`);
+        };
 
-        html = html.replace(
-            /<\/ul><br><ul>/g,
-            ""
-        );
+        const lines = html.split(/\n/);
+        for (let index = 0; index < lines.length; index++) {
+            const line = lines[index];
+            let match = line.match(/^###\s+(.+)/);
+            if (match) {
+                closeList();
+                output.push(`<h3>${match[1]}</h3>`);
+                continue;
+            }
 
-        return html;
+            match = line.match(/^##\s+(.+)/);
+            if (match) {
+                closeList();
+                output.push(`<h2>${match[1]}</h2>`);
+                continue;
+            }
+
+            match = line.match(/^#\s+(.+)/);
+            if (match) {
+                closeList();
+                output.push(`<h1>${match[1]}</h1>`);
+                continue;
+            }
+
+            match = line.match(/^[-*]\s+(.+)/);
+            if (match) {
+                addListItem("ul", match[1]);
+                continue;
+            }
+
+            match = line.match(/^\d+\.\s+(.+)/);
+            if (match) {
+                addListItem("ol", match[1]);
+                continue;
+            }
+
+            closeList();
+            output.push(line);
+
+            if (index < lines.length - 1) {
+                output.push("<br>");
+            }
+        }
+
+        closeList();
+
+        return output
+            .join("")
+            .replace(/@@CODE_BLOCK_(\d+)@@/g, (_, index) => codeBlocks[index]);
     }
+
 
     function escapeHtml(text) {
         const div = document.createElement("div");
@@ -406,7 +425,7 @@
         .getElementById("messageInput")
         .addEventListener(
             "keydown",
-            function(event) {
+            function (event) {
                 if (event.key === "Enter") {
                     sendMessage();
                 }
