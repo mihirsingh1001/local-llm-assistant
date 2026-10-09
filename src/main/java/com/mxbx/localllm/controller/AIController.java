@@ -1,17 +1,23 @@
 package com.mxbx.localllm.controller;
 
 import com.mxbx.localllm.dto.ChatRequestDTO;
+import com.mxbx.localllm.service.ConversationPersistenceService;
 import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.ai.chat.client.advisor.MessageChatMemoryAdvisor;
 import org.springframework.ai.chat.memory.ChatMemory;
 import org.springframework.http.MediaType;
 import org.springframework.http.codec.ServerSentEvent;
-import org.springframework.web.bind.annotation.*;
+import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RestController;
 import reactor.core.publisher.Flux;
 
 @RestController
 @RequestMapping("/api")
 public class AIController {
+
+    private static final String DEFAULT_CONVERSATION_ID = "chat-1";
 
     private static final String SYSTEM_PROMPT = """
             You are a helpful, accurate AI assistant.
@@ -34,16 +40,19 @@ public class AIController {
             """;
 
     private final ChatClient chatClient;
+    private final ConversationPersistenceService conversationPersistenceService;
 
     public AIController(
             ChatClient.Builder chatClientBuilder,
-            ChatMemory chatMemory
+            ChatMemory chatMemory,
+            ConversationPersistenceService conversationPersistenceService
     ) {
         this.chatClient = chatClientBuilder
                 .defaultAdvisors(
                         MessageChatMemoryAdvisor.builder(chatMemory).build()
                 )
                 .build();
+        this.conversationPersistenceService = conversationPersistenceService;
     }
 
     @PostMapping(
@@ -53,6 +62,14 @@ public class AIController {
     public Flux<ServerSentEvent<String>> chatStream(
             @RequestBody ChatRequestDTO request
     ) {
+        String conversationId = resolveConversationId(request.getConversationId());
+        StringBuilder assistantResponse = new StringBuilder();
+
+        conversationPersistenceService.saveUserMessage(
+                conversationId,
+                request.getMessage()
+        );
+
         return chatClient
                 .prompt()
                 .system(SYSTEM_PROMPT)
@@ -60,13 +77,20 @@ public class AIController {
                 .advisors(advisor -> advisor
                         .param(
                                 ChatMemory.CONVERSATION_ID,
-                                request.getConversationId()
+                                conversationId
                         )
                 )
                 .stream()
                 .content()
-                .doOnNext(chunk ->
-                        System.out.println("CHUNK = [" + chunk + "]")
+                .doOnNext(chunk -> {
+                    assistantResponse.append(chunk);
+                    System.out.println("CHUNK = [" + chunk + "]");
+                })
+                .doOnComplete(() ->
+                        conversationPersistenceService.saveAssistantMessage(
+                                conversationId,
+                                assistantResponse.toString()
+                        )
                 )
                 .map(chunk ->
                         ServerSentEvent.<String>builder()
@@ -82,5 +106,13 @@ public class AIController {
                                         .build()
                         )
                 );
+    }
+
+    private String resolveConversationId(String conversationId) {
+        if (conversationId == null || conversationId.isBlank()) {
+            return DEFAULT_CONVERSATION_ID;
+        }
+
+        return conversationId.trim();
     }
 }
