@@ -1,16 +1,16 @@
+
 package com.mxbx.localllm.controller;
 
 import com.mxbx.localllm.dto.ChatRequestDTO;
-import com.mxbx.localllm.service.ConversationPersistenceService;
+import com.mxbx.localllm.memory.PostgresChatMemory;
+
 import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.ai.chat.client.advisor.MessageChatMemoryAdvisor;
 import org.springframework.ai.chat.memory.ChatMemory;
 import org.springframework.http.MediaType;
 import org.springframework.http.codec.ServerSentEvent;
-import org.springframework.web.bind.annotation.PostMapping;
-import org.springframework.web.bind.annotation.RequestBody;
-import org.springframework.web.bind.annotation.RequestMapping;
-import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.bind.annotation.*;
+
 import reactor.core.publisher.Flux;
 
 @RestController
@@ -40,19 +40,16 @@ public class AIController {
             """;
 
     private final ChatClient chatClient;
-    private final ConversationPersistenceService conversationPersistenceService;
 
     public AIController(
             ChatClient.Builder chatClientBuilder,
-            ChatMemory chatMemory,
-            ConversationPersistenceService conversationPersistenceService
+            PostgresChatMemory chatMemory
     ) {
         this.chatClient = chatClientBuilder
                 .defaultAdvisors(
                         MessageChatMemoryAdvisor.builder(chatMemory).build()
                 )
                 .build();
-        this.conversationPersistenceService = conversationPersistenceService;
     }
 
     @PostMapping(
@@ -62,42 +59,27 @@ public class AIController {
     public Flux<ServerSentEvent<String>> chatStream(
             @RequestBody ChatRequestDTO request
     ) {
-        String conversationId = resolveConversationId(request.getConversationId());
-        StringBuilder assistantResponse = new StringBuilder();
-
-        conversationPersistenceService.saveUserMessage(
-                conversationId,
-                request.getMessage()
-        );
+        String conversationId =
+                resolveConversationId(request.getConversationId());
 
         return chatClient
                 .prompt()
                 .system(SYSTEM_PROMPT)
                 .user(request.getMessage())
-                .advisors(advisor -> advisor
-                        .param(
-                                ChatMemory.CONVERSATION_ID,
-                                conversationId
-                        )
-                )
+                .advisors(advisor -> advisor.param(
+                        ChatMemory.CONVERSATION_ID,
+                        conversationId
+                ))
                 .stream()
                 .content()
-                .doOnNext(chunk -> {
-                    assistantResponse.append(chunk);
+                .map(chunk -> {
                     System.out.println("CHUNK = [" + chunk + "]");
+
+                    return ServerSentEvent.<String>builder()
+                            .event("message")
+                            .data(chunk)
+                            .build();
                 })
-                .doOnComplete(() ->
-                        conversationPersistenceService.saveAssistantMessage(
-                                conversationId,
-                                assistantResponse.toString()
-                        )
-                )
-                .map(chunk ->
-                        ServerSentEvent.<String>builder()
-                                .event("message")
-                                .data(chunk)
-                                .build()
-                )
                 .concatWith(
                         Flux.just(
                                 ServerSentEvent.<String>builder()

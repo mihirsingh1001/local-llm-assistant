@@ -49,6 +49,25 @@ public class ConversationPersistenceService {
         saveMessage(conversation, MessageRole.ASSISTANT, response);
     }
 
+
+    @Transactional(readOnly = true)
+    public java.util.List<ConversationMessageEntity>
+    getMessagesForConversation(String conversationId) {
+        return messageRepository
+                .findByConversationIdOrderByCreatedAtAscIdAsc(conversationId);
+    }
+
+    @Transactional
+    public void clearMessagesForConversation(String conversationId) {
+        messageRepository.deleteByConversationId(conversationId);
+
+        conversationRepository.findById(conversationId)
+                .ifPresent(conversation ->
+                        conversation.setUpdatedAt(Instant.now())
+                );
+    }
+
+
     private ConversationEntity getOrCreateConversation(String conversationId) {
         return conversationRepository
                 .findById(conversationId)
